@@ -1,72 +1,80 @@
 import streamlit as st
-import re
-import os
-from PyPDF2 import PdfReader, PdfWriter
+import pandas as pd
+import xml.etree.ElementTree as ET
 from io import BytesIO
+from PyPDF2 import PdfReader, PdfWriter
+import tempfile
+import os
 
-st.set_page_config(page_title="PDF Find & Replace", layout="centered")
+st.set_page_config(page_title="Find & Replace App", layout="centered")
 
-st.title("📄 PDF Find and Replace Tool")
-st.write("Upload a PDF and specify words to find and replace. This tool ensures clean word-level replacement without overlaps.")
+st.title("🔍 Find and Replace Tool")
+st.markdown("Supports **PDF**, **CSV**, **XML**, and **XPT** files")
 
-# -------------------------
-# PDF Replacement Function
-# -------------------------
+uploaded_file = st.file_uploader("Upload a file", type=["pdf", "csv", "xml", "xpt"])
+find_text = st.text_input("Word to Find")
+replace_text = st.text_input("Replace With")
+replace_button = st.button("Replace & Download")
 
-def replace_text_in_pdf(input_pdf, replacements):
-    reader = PdfReader(input_pdf)
+def replace_in_pdf(file, find_text, replace_text):
+    reader = PdfReader(file)
     writer = PdfWriter()
-
-    sorted_replacements = sorted(replacements.items(), key=lambda x: -len(x[0]))
-
     for page in reader.pages:
         text = page.extract_text()
-
         if text:
-            for old, new in sorted_replacements:
-                pattern = r'\b{}\b'.format(re.escape(old))
-                text = re.sub(pattern, new, text)
-
-            # Create new page with updated text (keeping original layout)
-            writer.add_blank_page(width=page.mediabox.width, height=page.mediabox.height)
-            writer.pages[-1].merge_page(page)
+            updated_text = text.replace(find_text, replace_text)
+            writer.add_page(page)
+            writer.pages[-1].extract_text = lambda: updated_text
         else:
             writer.add_page(page)
 
-    output_pdf = BytesIO()
-    writer.write(output_pdf)
-    output_pdf.seek(0)
-    return output_pdf
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp:
+        writer.write(temp)
+        temp.seek(0)
+        return temp.name
 
-# -------------------------
-# Streamlit App UI
-# -------------------------
+def replace_in_csv(file, find_text, replace_text):
+    df = pd.read_csv(file)
+    df = df.applymap(lambda x: x.replace(find_text, replace_text) if isinstance(x, str) else x)
+    return df.to_csv(index=False).encode('utf-8')
 
-uploaded_file = st.file_uploader("Upload PDF file", type=["pdf"])
+def replace_in_xml(file, find_text, replace_text):
+    tree = ET.parse(file)
+    root = tree.getroot()
 
-st.markdown("### 📝 Replacement Pairs")
-st.write("Enter one pair per line like: `oldword,newword`")
+    def recursive_replace(elem):
+        if elem.text and find_text in elem.text:
+            elem.text = elem.text.replace(find_text, replace_text)
+        for child in elem:
+            recursive_replace(child)
 
-replacements_input = st.text_area("Find and Replace Pairs", height=150, placeholder="example,data\nerror,issue")
+    recursive_replace(root)
+    xml_io = BytesIO()
+    tree.write(xml_io, encoding='utf-8', xml_declaration=True)
+    return xml_io.getvalue()
 
-if st.button("Replace and Download PDF") and uploaded_file and replacements_input:
-    with st.spinner("Processing..."):
+def replace_in_xpt(file, find_text, replace_text):
+    return b"This file format is not supported yet, placeholder added."
 
-        try:
-            # Parse replacements
-            lines = replacements_input.strip().split("\n")
-            replacements = {}
-            for line in lines:
-                if ',' in line:
-                    key, value = line.strip().split(",", 1)
-                    replacements[key.strip()] = value.strip()
+if uploaded_file and replace_button and find_text:
+    file_ext = uploaded_file.name.split('.')[-1].lower()
 
-            output_pdf = replace_text_in_pdf(uploaded_file, replacements)
+    if file_ext == "pdf":
+        result_path = replace_in_pdf(uploaded_file, find_text, replace_text)
+        with open(result_path, "rb") as f:
+            st.download_button("📄 Download Updated PDF", f.read(), file_name="updated.pdf", mime="application/pdf")
+        os.remove(result_path)
 
-            st.success("✅ Replacement complete!")
-            st.download_button("📥 Download Modified PDF", output_pdf, file_name="updated.pdf", mime="application/pdf")
+    elif file_ext == "csv":
+        csv_bytes = replace_in_csv(uploaded_file, find_text, replace_text)
+        st.download_button("📄 Download Updated CSV", csv_bytes, file_name="updated.csv", mime="text/csv")
 
-        except Exception as e:
-            st.error(f"Something went wrong: {e}")
-else:
-    st.info("👆 Upload a PDF and enter replacement pairs to begin.")
+    elif file_ext == "xml":
+        xml_bytes = replace_in_xml(uploaded_file, find_text, replace_text)
+        st.download_button("📄 Download Updated XML", xml_bytes, file_name="updated.xml", mime="application/xml")
+
+    elif file_ext == "xpt":
+        # Real XPT support requires SAS libraries — placeholder response for now
+        st.warning("XPT (SAS Transport) file replacement is not yet supported.")
+    else:
+        st.error("Unsupported file type.")
