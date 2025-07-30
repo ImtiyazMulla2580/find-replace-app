@@ -11,16 +11,30 @@ find_word = st.text_input("Find word")
 replace_word = st.text_input("Replace with")
 uploaded_files = st.file_uploader("Upload files (.pdf, .csv, .xml, .xpt, or .zip)", accept_multiple_files=True)
 
-def process_pdf(file, find_word, replace_word):
-    doc = fitz.open(stream=file.read(), filetype="pdf")
-    for page in doc:
-        text = page.get_text()
-        new_text = text.replace(find_word, replace_word)
-        page.insert_text((50, 50), new_text, overlay=True)
-    output = io.BytesIO()
-    doc.save(output)
-    doc.close()
-    return output.getvalue()
+import re
+from PyPDF2 import PdfReader, PdfWriter
+
+def replace_text_in_pdf(input_path, output_path, replacements):
+    reader = PdfReader(input_path)
+    writer = PdfWriter()
+
+    # Sort replacements by word length (longest first) to avoid overlaps
+    sorted_replacements = sorted(replacements.items(), key=lambda x: -len(x[0]))
+
+    for page in reader.pages:
+        text = page.extract_text()
+
+        # Perform safe word-by-word replacement using word boundaries
+        for old_word, new_word in sorted_replacements:
+            pattern = r'\b{}\b'.format(re.escape(old_word))
+            text = re.sub(pattern, new_word, text)
+
+        writer.add_page(page)
+        writer.pages[-1].extract_text = lambda: text  # Overwrite text
+
+    with open(output_path, 'wb') as f:
+        writer.write(f)
+
 
 def process_csv(file, find_word, replace_word):
     df = pd.read_csv(file)
