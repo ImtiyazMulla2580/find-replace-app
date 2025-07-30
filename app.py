@@ -1,80 +1,56 @@
 import streamlit as st
-import pandas as pd
-import xml.etree.ElementTree as ET
-from io import BytesIO
-from PyPDF2 import PdfReader, PdfWriter
-import tempfile
+from pdf2docx import Converter
+from docx import Document
 import os
+import tempfile
+# 🔧 Ensure pypandoc can use tectonic installed via packages.txt
+os.environ["PATH"] += os.pathsep + "/home/adminuser/.local/bin"
 
-st.set_page_config(page_title="Find & Replace App", layout="centered")
+st.set_page_config(page_title="PDF Find & Replace", layout="centered")
+st.title("🔍 PDF Find & Replace (Preserves Layout)")
+st.markdown("This app converts your PDF to Word, replaces words, and converts it back to PDF — layout preserved ✅")
 
-st.title("🔍 Find and Replace Tool")
-st.markdown("Supports **PDF**, **CSV**, **XML**, and **XPT** files")
+uploaded_file = st.file_uploader("📄 Upload a PDF file", type=["pdf"])
+find_text = st.text_input("🔍 Text to Find")
+replace_text = st.text_input("✏️ Replace With")
+run_button = st.button("🔁 Replace & Download")
 
-uploaded_file = st.file_uploader("Upload a file", type=["pdf", "csv", "xml", "xpt"])
-find_text = st.text_input("Word to Find")
-replace_text = st.text_input("Replace With")
-replace_button = st.button("Replace & Download")
+def replace_in_docx(docx_path, find_text, replace_text):
+    doc = Document(docx_path)
+    for para in doc.paragraphs:
+        if find_text in para.text:
+            inline = para.runs
+            for i in range(len(inline)):
+                if find_text in inline[i].text:
+                    inline[i].text = inline[i].text.replace(find_text, replace_text)
+    temp_docx = tempfile.NamedTemporaryFile(delete=False, suffix=".docx")
+    doc.save(temp_docx.name)
+    return temp_docx.name
 
-def replace_in_pdf(file, find_text, replace_text):
-    reader = PdfReader(file)
-    writer = PdfWriter()
-    for page in reader.pages:
-        text = page.extract_text()
-        if text:
-            updated_text = text.replace(find_text, replace_text)
-            writer.add_page(page)
-            writer.pages[-1].extract_text = lambda: updated_text
-        else:
-            writer.add_page(page)
+if uploaded_file and run_button and find_text:
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_pdf:
+        temp_pdf.write(uploaded_file.read())
+        temp_pdf.flush()
 
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp:
-        writer.write(temp)
-        temp.seek(0)
-        return temp.name
+        # Step 1: Convert PDF to DOCX
+        temp_docx_path = temp_pdf.name.replace(".pdf", ".docx")
+        cv = Converter(temp_pdf.name)
+        cv.convert(temp_docx_path)
+        cv.close()
 
-def replace_in_csv(file, find_text, replace_text):
-    df = pd.read_csv(file)
-    df = df.applymap(lambda x: x.replace(find_text, replace_text) if isinstance(x, str) else x)
-    return df.to_csv(index=False).encode('utf-8')
+        # Step 2: Replace text
+        updated_docx = replace_in_docx(temp_docx_path, find_text, replace_text)
 
-def replace_in_xml(file, find_text, replace_text):
-    tree = ET.parse(file)
-    root = tree.getroot()
+        # Step 3: Convert DOCX to PDF using tectonic (via pypandoc)
+        final_pdf = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+        output_pdf_path = final_pdf.name
 
-    def recursive_replace(elem):
-        if elem.text and find_text in elem.text:
-            elem.text = elem.text.replace(find_text, replace_text)
-        for child in elem:
-            recursive_replace(child)
+        try:
+           os.system(f"pandoc {updated_docx} -o {output_pdf_path}")
 
-    recursive_replace(root)
-    xml_io = BytesIO()
-    tree.write(xml_io, encoding='utf-8', xml_declaration=True)
-    return xml_io.getvalue()
-
-def replace_in_xpt(file, find_text, replace_text):
-    return b"This file format is not supported yet, placeholder added."
-
-if uploaded_file and replace_button and find_text:
-    file_ext = uploaded_file.name.split('.')[-1].lower()
-
-    if file_ext == "pdf":
-        result_path = replace_in_pdf(uploaded_file, find_text, replace_text)
-        with open(result_path, "rb") as f:
-            st.download_button("📄 Download Updated PDF", f.read(), file_name="updated.pdf", mime="application/pdf")
-        os.remove(result_path)
-
-    elif file_ext == "csv":
-        csv_bytes = replace_in_csv(uploaded_file, find_text, replace_text)
-        st.download_button("📄 Download Updated CSV", csv_bytes, file_name="updated.csv", mime="text/csv")
-
-    elif file_ext == "xml":
-        xml_bytes = replace_in_xml(uploaded_file, find_text, replace_text)
-        st.download_button("📄 Download Updated XML", xml_bytes, file_name="updated.xml", mime="application/xml")
-
-    elif file_ext == "xpt":
-        # Real XPT support requires SAS libraries — placeholder response for now
-        st.warning("XPT (SAS Transport) file replacement is not yet supported.")
-    else:
-        st.error("Unsupported file type.")
+            with open(output_pdf_path, "rb") as f:
+                st.success("✅ Conversion successful!")
+                st.download_button("📥 Download Updated PDF", f.read(), file_name="updated.pdf", mime="application/pdf")
+        except Exception as e:
+            st.error("❌ PDF conversion failed. Tectonic may not be installed or accessible.")
+            st.exception(e)
