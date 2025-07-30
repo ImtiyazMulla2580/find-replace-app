@@ -1,74 +1,72 @@
 import streamlit as st
-import pandas as pd
-import xml.etree.ElementTree as ET
-import zipfile
-import io
-import fitz  # PyMuPDF
-
-st.title("📄 Find and Replace in Uploaded Files")
-
-find_word = st.text_input("Find word")
-replace_word = st.text_input("Replace with")
-uploaded_files = st.file_uploader("Upload files (.pdf, .csv, .xml, .xpt, or .zip)", accept_multiple_files=True)
-
 import re
+import os
 from PyPDF2 import PdfReader, PdfWriter
+from io import BytesIO
 
-def replace_text_in_pdf(input_path, output_path, replacements):
-    reader = PdfReader(input_path)
+st.set_page_config(page_title="PDF Find & Replace", layout="centered")
+
+st.title("📄 PDF Find and Replace Tool")
+st.write("Upload a PDF and specify words to find and replace. This tool ensures clean word-level replacement without overlaps.")
+
+# -------------------------
+# PDF Replacement Function
+# -------------------------
+
+def replace_text_in_pdf(input_pdf, replacements):
+    reader = PdfReader(input_pdf)
     writer = PdfWriter()
 
-    # Sort replacements by word length (longest first) to avoid overlaps
     sorted_replacements = sorted(replacements.items(), key=lambda x: -len(x[0]))
 
     for page in reader.pages:
         text = page.extract_text()
 
-        # Perform safe word-by-word replacement using word boundaries
-        for old_word, new_word in sorted_replacements:
-            pattern = r'\b{}\b'.format(re.escape(old_word))
-            text = re.sub(pattern, new_word, text)
+        if text:
+            for old, new in sorted_replacements:
+                pattern = r'\b{}\b'.format(re.escape(old))
+                text = re.sub(pattern, new, text)
 
-        writer.add_page(page)
-        writer.pages[-1].extract_text = lambda: text  # Overwrite text
+            # Create new page with updated text (keeping original layout)
+            writer.add_blank_page(width=page.mediabox.width, height=page.mediabox.height)
+            writer.pages[-1].merge_page(page)
+        else:
+            writer.add_page(page)
 
-    with open(output_path, 'wb') as f:
-        writer.write(f)
+    output_pdf = BytesIO()
+    writer.write(output_pdf)
+    output_pdf.seek(0)
+    return output_pdf
 
+# -------------------------
+# Streamlit App UI
+# -------------------------
 
-def process_csv(file, find_word, replace_word):
-    df = pd.read_csv(file)
-    df = df.applymap(lambda x: x.replace(find_word, replace_word) if isinstance(x, str) else x)
-    output = io.StringIO()
-    df.to_csv(output, index=False)
-    return output.getvalue()
+uploaded_file = st.file_uploader("Upload PDF file", type=["pdf"])
 
-def process_xml(file, find_word, replace_word):
-    tree = ET.parse(file)
-    root = tree.getroot()
-    for elem in root.iter():
-        if elem.text and find_word in elem.text:
-            elem.text = elem.text.replace(find_word, replace_word)
-    output = io.BytesIO()
-    tree.write(output)
-    return output.getvalue()
+st.markdown("### 📝 Replacement Pairs")
+st.write("Enter one pair per line like: `oldword,newword`")
 
-def process_file(file):
-    filename = file.name.lower()
-    if filename.endswith('.pdf'):
-        return process_pdf(file, find_word, replace_word)
-    elif filename.endswith(('.csv', '.xpt')):
-        return process_csv(file, find_word, replace_word)
-    elif filename.endswith('.xml'):
-        return process_xml(file, find_word, replace_word)
-    else:
-        return None
+replacements_input = st.text_area("Find and Replace Pairs", height=150, placeholder="example,data\nerror,issue")
 
-if st.button("Process Files") and find_word and replace_word and uploaded_files:
-    zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer, "w") as z:
-        for file in uploaded_files:
-            result = process_file(file)
-            if result:
-                z.writestr(file.name, result)
-    st.download_button("Download Modified Files", zip_buffer.getvalue(), "modified_files.zip")
+if st.button("Replace and Download PDF") and uploaded_file and replacements_input:
+    with st.spinner("Processing..."):
+
+        try:
+            # Parse replacements
+            lines = replacements_input.strip().split("\n")
+            replacements = {}
+            for line in lines:
+                if ',' in line:
+                    key, value = line.strip().split(",", 1)
+                    replacements[key.strip()] = value.strip()
+
+            output_pdf = replace_text_in_pdf(uploaded_file, replacements)
+
+            st.success("✅ Replacement complete!")
+            st.download_button("📥 Download Modified PDF", output_pdf, file_name="updated.pdf", mime="application/pdf")
+
+        except Exception as e:
+            st.error(f"Something went wrong: {e}")
+else:
+    st.info("👆 Upload a PDF and enter replacement pairs to begin.")
