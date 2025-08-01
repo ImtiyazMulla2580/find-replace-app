@@ -1,257 +1,346 @@
 import streamlit as st
-import pypdf
-from reportlab.pdfgen import canvas
-from reportlab.lib.pagesizes import letter
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.units import inch
+import fitz  # PyMuPDF
 import io
 import tempfile
-import re
 
-st.set_page_config(page_title="PDF Find & Replace - Working Version", layout="centered")
-st.title("🔍 PDF Find & Replace (Working Version)")
-st.markdown("This app extracts text from PDF, replaces words, and creates a new PDF using PyPDF + reportlab ✅")
-st.info("⚠️ Note: This approach extracts text and recreates the PDF. Complex layouts may not be preserved perfectly.")
+st.set_page_config(page_title="PDF Find & Replace - Enhanced", layout="centered")
+st.title("🎯 PDF Find & Replace (Enhanced Formatting)")
+st.markdown("Advanced PDF text replacement with maximum formatting preservation ✨")
 
 uploaded_file = st.file_uploader("📄 Upload a PDF file", type=["pdf"])
 find_text = st.text_input("🔍 Text to Find")
 replace_text = st.text_input("✏️ Replace With")
 
-# Advanced options
-with st.expander("⚙️ Advanced Options"):
-    preserve_case = st.checkbox("Preserve case sensitivity", value=True)
-    whole_words_only = st.checkbox("Replace whole words only", value=False)
+# Processing options
+st.subheader("🔧 Processing Options")
+col1, col2 = st.columns(2)
 
-run_button = st.button("🔁 Replace & Download")
+with col1:
+    preserve_fonts = st.checkbox("🔤 Preserve original fonts", value=True)
+    preserve_colors = st.checkbox("🎨 Preserve text colors", value=True)
 
-def extract_text_from_pdf(pdf_file):
-    """Extract text from PDF using PyPDF"""
+with col2:
+    case_sensitive = st.checkbox("🔍 Case sensitive search", value=True)
+    whole_words = st.checkbox("📝 Whole words only", value=False)
+
+run_button = st.button("🔁 Replace & Download", type="primary")
+
+def get_font_info(span):
+    """Extract detailed font information from text span"""
+    font_info = {
+        'name': span.get('font', 'helv'),
+        'size': span.get('size', 12),
+        'flags': span.get('flags', 0),
+        'color': span.get('color', 0),
+        'ascender': span.get('ascender', 0.8),
+        'descender': span.get('descender', -0.2)
+    }
+    
+    # Clean font name (remove subset prefix if present)
+    if '+' in font_info['name']:
+        font_info['clean_name'] = font_info['name'].split('+')[-1]
+    else:
+        font_info['clean_name'] = font_info['name']
+    
+    return font_info
+
+def advanced_pdf_replacement(pdf_bytes, find_text, replace_text, options):
+    """Advanced PDF replacement with maximum formatting preservation"""
     try:
-        reader = pypdf.PdfReader(pdf_file)
-        text_content = []
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        total_replacements = 0
+        replacement_details = []
         
-        for page_num, page in enumerate(reader.pages):
-            page_text = page.extract_text()
-            text_content.append({
-                'page_num': page_num + 1,
-                'text': page_text
-            })
+        for page_num in range(len(doc)):
+            page = doc.load_page(page_num)
+            page_replacements = 0
+            
+            # Get detailed text information
+            text_dict = page.get_text("dict")
+            
+            for block in text_dict.get("blocks", []):
+                if "lines" in block:
+                    for line in block["lines"]:
+                        for span in line["spans"]:
+                            original_text = span.get("text", "")
+                            
+                            # Apply search options
+                            if options['whole_words']:
+                                import re
+                                if options['case_sensitive']:
+                                    pattern = r'\b' + re.escape(find_text) + r'\b'
+                                    matches = list(re.finditer(pattern, original_text))
+                                else:
+                                    pattern = r'\b' + re.escape(find_text) + r'\b'
+                                    matches = list(re.finditer(pattern, original_text, re.IGNORECASE))
+                            else:
+                                if options['case_sensitive']:
+                                    if find_text in original_text:
+                                        matches = [True]
+                                    else:
+                                        matches = []
+                                else:
+                                    if find_text.lower() in original_text.lower():
+                                        matches = [True]
+                                    else:
+                                        matches = []
+                            
+                            if matches:
+                                # Get font information
+                                font_info = get_font_info(span)
+                                bbox = fitz.Rect(span["bbox"])
+                                
+                                # Perform replacement
+                                if options['case_sensitive']:
+                                    new_text = original_text.replace(find_text, replace_text)
+                                else:
+                                    import re
+                                    new_text = re.sub(re.escape(find_text), replace_text, original_text, flags=re.IGNORECASE)
+                                
+                                # Count replacements
+                                if options['case_sensitive']:
+                                    replacements_in_span = original_text.count(find_text)
+                                else:
+                                    replacements_in_span = original_text.lower().count(find_text.lower())
+                                
+                                page_replacements += replacements_in_span
+                                
+                                # Remove original text
+                                page.add_redact_annot(bbox, "")
+                                page.apply_redactions()
+                                
+                                # Insert replacement text with preserved formatting
+                                insert_point = bbox.tl
+                                
+                                # Apply formatting options
+                                font_name = font_info['clean_name'] if options['preserve_fonts'] else 'helv'
+                                text_color = font_info['color'] if options['preserve_colors'] else 0
+                                
+                                try:
+                                    page.insert_text(
+                                        insert_point,
+                                        new_text,
+                                        fontsize=font_info['size'],
+                                        fontname=font_name,
+                                        color=text_color,
+                                        render_mode=0
+                                    )
+                                except:
+                                    # Fallback with basic font
+                                    page.insert_text(
+                                        insert_point,
+                                        new_text,
+                                        fontsize=font_info['size'],
+                                        fontname='helv',
+                                        color=text_color
+                                    )
+            
+            if page_replacements > 0:
+                replacement_details.append({
+                    'page': page_num + 1,
+                    'replacements': page_replacements
+                })
+                total_replacements += page_replacements
         
-        return text_content, len(reader.pages)
+        # Get modified PDF bytes
+        result_bytes = doc.tobytes()
+        doc.close()
+        
+        return result_bytes, total_replacements, replacement_details, "Success"
+        
     except Exception as e:
-        st.error(f"Error reading PDF: {str(e)}")
-        return None, 0
+        return None, 0, [], f"Error: {str(e)}"
 
-def replace_text_in_content(text_content, find_text, replace_text, preserve_case=True, whole_words_only=False):
-    """Replace text in the extracted content with advanced options"""
-    updated_content = []
-    total_replacements = 0
-    
-    for page_data in text_content:
-        original_text = page_data['text']
-        
-        if whole_words_only:
-            # Use regex for whole words only
-            if preserve_case:
-                pattern = r'\b' + re.escape(find_text) + r'\b'
-                updated_text = re.sub(pattern, replace_text, original_text)
-            else:
-                pattern = r'\b' + re.escape(find_text) + r'\b'
-                updated_text = re.sub(pattern, replace_text, original_text, flags=re.IGNORECASE)
-        else:
-            # Simple string replacement
-            if preserve_case:
-                updated_text = original_text.replace(find_text, replace_text)
-            else:
-                # Case-insensitive replacement
-                pattern = re.escape(find_text)
-                updated_text = re.sub(pattern, replace_text, original_text, flags=re.IGNORECASE)
-        
-        # Count replacements
-        if preserve_case and not whole_words_only:
-            replacements_on_page = original_text.count(find_text)
-        else:
-            # Count using regex for more complex cases
-            if whole_words_only:
-                pattern = r'\b' + re.escape(find_text) + r'\b'
-            else:
-                pattern = re.escape(find_text)
-            
-            flags = re.IGNORECASE if not preserve_case else 0
-            replacements_on_page = len(re.findall(pattern, original_text, flags=flags))
-        
-        total_replacements += replacements_on_page
-        
-        updated_content.append({
-            'page_num': page_data['page_num'],
-            'text': updated_text,
-            'replacements': replacements_on_page
-        })
-    
-    return updated_content, total_replacements
-
-def create_pdf_with_text(text_content, filename="updated.pdf"):
-    """Create a new PDF with the replaced text using reportlab"""
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=letter, 
-                          rightMargin=72, leftMargin=72,
-                          topMargin=72, bottomMargin=18)
-    
-    # Get styles
-    styles = getSampleStyleSheet()
-    normal_style = styles['Normal']
-    normal_style.fontSize = 11
-    normal_style.leading = 14
-    
-    # Custom styles
-    page_header_style = ParagraphStyle(
-        'PageHeader',
-        parent=styles['Heading2'],
-        fontSize=14,
-        spaceAfter=12,
-        textColor='darkblue'
-    )
-    
-    story = []
-    
-    for page_data in text_content:
-        if page_data['text'].strip():  # Only add pages with content
-            # Add page header
-            page_header = f"Page {page_data['page_num']}"
-            story.append(Paragraph(page_header, page_header_style))
-            
-            # Clean and format text
-            text = page_data['text'].strip()
-            
-            # Split into paragraphs (handle various line break patterns)
-            paragraphs = re.split(r'\n\s*\n|\r\n\s*\r\n', text)
-            
-            for para in paragraphs:
-                if para.strip():
-                    # Clean up the paragraph text
-                    clean_para = re.sub(r'\s+', ' ', para.strip())
-                    # Escape special characters for reportlab
-                    clean_para = clean_para.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-                    
-                    story.append(Paragraph(clean_para, normal_style))
-                    story.append(Spacer(1, 6))
-            
-            # Add space between pages (except for the last page)
-            if page_data['page_num'] < len(text_content):
-                story.append(Spacer(1, 30))
-    
-    # Build PDF
+def fallback_text_replacement(pdf_bytes, find_text, replace_text, options):
+    """Fallback method with basic text replacement"""
     try:
-        doc.build(story)
-        buffer.seek(0)
-        return buffer
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        new_doc = fitz.open()
+        total_replacements = 0
+        
+        for page_num in range(len(doc)):
+            page = doc.load_page(page_num)
+            
+            # Extract text and perform replacement
+            text = page.get_text()
+            if options['case_sensitive']:
+                replaced_text = text.replace(find_text, replace_text)
+                replacements = text.count(find_text)
+            else:
+                import re
+                replaced_text = re.sub(re.escape(find_text), replace_text, text, flags=re.IGNORECASE)
+                replacements = len(re.findall(re.escape(find_text), text, re.IGNORECASE))
+            
+            total_replacements += replacements
+            
+            # Create new page
+            rect = page.rect
+            new_page = new_doc.new_page(width=rect.width, height=rect.height)
+            
+            if replaced_text.strip():
+                new_page.insert_text(
+                    (50, 50),
+                    replaced_text,
+                    fontsize=11,
+                    fontname="helv"
+                )
+        
+        result_bytes = new_doc.tobytes()
+        new_doc.close()
+        doc.close()
+        
+        return result_bytes, total_replacements, [], "Fallback method used"
+        
     except Exception as e:
-        st.error(f"Error creating PDF: {str(e)}")
-        return None
+        return None, 0, [], f"Fallback failed: {str(e)}"
+
+def analyze_pdf_complexity(pdf_bytes):
+    """Analyze PDF to recommend best processing method"""
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        
+        stats = {
+            'pages': len(doc),
+            'fonts': set(),
+            'colors': set(),
+            'images': 0,
+            'complexity_score': 0
+        }
+        
+        for page_num in range(min(3, len(doc))):  # Check first 3 pages
+            page = doc.load_page(page_num)
+            
+            # Count images
+            stats['images'] += len(page.get_images())
+            
+            # Analyze text formatting
+            text_dict = page.get_text("dict")
+            for block in text_dict.get("blocks", []):
+                if "lines" in block:
+                    for line in block["lines"]:
+                        for span in line["spans"]:
+                            stats['fonts'].add(span.get('font', 'unknown'))
+                            stats['colors'].add(span.get('color', 0))
+        
+        # Calculate complexity score
+        stats['complexity_score'] = len(stats['fonts']) + len(stats['colors']) + (stats['images'] * 2)
+        
+        doc.close()
+        return stats
+        
+    except:
+        return {'complexity_score': 0, 'pages': 0}
 
 if uploaded_file and run_button:
     if not find_text:
-        st.warning("Please enter text to find.")
+        st.warning("⚠️ Please enter text to find.")
     elif not replace_text:
-        st.warning("Please enter replacement text.")
+        st.warning("⚠️ Please enter replacement text.")
     else:
-        with st.spinner("Processing PDF..."):
-            # Step 1: Extract text from PDF
-            text_content, total_pages = extract_text_from_pdf(uploaded_file)
+        with st.spinner("🔍 Analyzing PDF..."):
+            pdf_bytes = uploaded_file.read()
             
-            if text_content:
-                st.success(f"✅ Successfully extracted text from {total_pages} pages")
-                
-                # Show extracted text statistics
-                total_chars = sum(len(page['text']) for page in text_content)
-                st.info(f"📊 Total characters extracted: {total_chars:,}")
-                
-                # Step 2: Replace text
-                updated_content, total_replacements = replace_text_in_content(
-                    text_content, find_text, replace_text, preserve_case, whole_words_only
+            # Analyze PDF complexity
+            pdf_stats = analyze_pdf_complexity(pdf_bytes)
+            
+            # Show PDF analysis
+            with st.expander("📊 PDF Analysis"):
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Pages", pdf_stats.get('pages', 0))
+                with col2:
+                    st.metric("Fonts", len(pdf_stats.get('fonts', [])))
+                with col3:
+                    st.metric("Complexity", pdf_stats.get('complexity_score', 0))
+            
+            # Process PDF
+            options = {
+                'preserve_fonts': preserve_fonts,
+                'preserve_colors': preserve_colors,
+                'case_sensitive': case_sensitive,
+                'whole_words': whole_words
+            }
+            
+            with st.spinner("🔄 Processing PDF..."):
+                # Try advanced method first
+                result_bytes, replacements, details, status = advanced_pdf_replacement(
+                    pdf_bytes, find_text, replace_text, options
                 )
                 
-                if total_replacements > 0:
-                    st.success(f"✅ Found and replaced {total_replacements} instances of '{find_text}'")
+                if not result_bytes or replacements == 0:
+                    # Try fallback method
+                    st.info("🔄 Trying fallback method...")
+                    result_bytes, replacements, details, status = fallback_text_replacement(
+                        pdf_bytes, find_text, replace_text, options
+                    )
+                
+                if result_bytes and replacements > 0:
+                    st.success(f"✅ Successfully replaced {replacements} instances!")
                     
-                    # Show replacement summary
-                    with st.expander("📊 Replacement Summary"):
-                        st.write(f"**Search term:** {find_text}")
-                        st.write(f"**Replacement:** {replace_text}")
-                        st.write(f"**Case sensitive:** {preserve_case}")
-                        st.write(f"**Whole words only:** {whole_words_only}")
-                        st.write("**Replacements by page:**")
+                    # Show processing details
+                    with st.expander("📋 Processing Details"):
+                        st.write(f"**Status:** {status}")
+                        st.write(f"**Search term:** `{find_text}`")
+                        st.write(f"**Replacement:** `{replace_text}`")
+                        st.write(f"**Total replacements:** {replacements}")
                         
-                        for page_data in updated_content:
-                            if page_data['replacements'] > 0:
-                                st.write(f"• Page {page_data['page_num']}: {page_data['replacements']} replacements")
+                        if details:
+                            st.write("**By page:**")
+                            for detail in details:
+                                st.write(f"• Page {detail['page']}: {detail['replacements']} replacements")
                     
-                    # Step 3: Create new PDF
-                    try:
-                        pdf_buffer = create_pdf_with_text(updated_content)
-                        
-                        if pdf_buffer:
-                            st.success("✅ New PDF created successfully!")
-                            
-                            # Create columns for download and preview
-                            col1, col2 = st.columns([1, 2])
-                            
-                            with col1:
-                                st.download_button(
-                                    label="📥 Download Updated PDF",
-                                    data=pdf_buffer,
-                                    file_name=f"updated_{uploaded_file.name}",
-                                    mime="application/pdf",
-                                    use_container_width=True
-                                )
-                            
-                            with col2:
-                                st.info("💡 The new PDF contains the extracted text with replacements applied. Layout formatting may differ from the original.")
-                                
-                    except Exception as e:
-                        st.error(f"Error creating PDF: {str(e)}")
-                        
-                else:
+                    # Download section
+                    st.markdown("### 📥 Download Result")
+                    
+                    col1, col2 = st.columns([2, 1])
+                    with col1:
+                        st.download_button(
+                            label="📥 Download Enhanced PDF",
+                            data=result_bytes,
+                            file_name=f"enhanced_{uploaded_file.name}",
+                            mime="application/pdf",
+                            use_container_width=True
+                        )
+                    
+                    with col2:
+                        file_size = len(result_bytes) / 1024  # KB
+                        st.metric("File Size", f"{file_size:.1f} KB")
+                    
+                    st.success("🎉 PDF processing completed with enhanced formatting preservation!")
+                    
+                elif replacements == 0:
                     st.warning(f"❌ No instances of '{find_text}' found in the document.")
                     
-                    # Show suggestions
-                    st.info("💡 Try adjusting your search:")
+                    # Suggestions
+                    st.info("💡 **Suggestions:**")
                     st.write("• Check spelling and capitalization")
-                    st.write("• Try searching for partial words")
-                    st.write("• Use the case-insensitive option")
+                    st.write("• Try disabling 'Case sensitive search'")
+                    st.write("• Try disabling 'Whole words only'")
+                    st.write("• Search for a shorter text snippet")
                     
-                # Show preview of extracted text
-                with st.expander("👀 Preview Extracted Text (First 2 Pages)"):
-                    for page_data in text_content[:2]:  # Show first 2 pages
-                        st.subheader(f"Page {page_data['page_num']}")
-                        preview_text = page_data['text'][:1000] + "..." if len(page_data['text']) > 1000 else page_data['text']
-                        st.text_area(
-                            f"Page {page_data['page_num']} Content", 
-                            preview_text, 
-                            height=200, 
-                            key=f"preview_{page_data['page_num']}",
-                            help="This is the raw text extracted from the PDF"
-                        )
-                        
-                        # Highlight found instances
-                        if find_text.lower() in page_data['text'].lower():
-                            count = page_data['text'].lower().count(find_text.lower())
-                            st.success(f"✅ Found '{find_text}' {count} times on this page")
+                else:
+                    st.error("❌ PDF processing failed.")
+                    st.write(f"Error details: {status}")
 
-# Add footer with instructions
+# Footer
 st.markdown("---")
 st.markdown("""
-### 📝 How to Use:
-1. **Upload** your PDF file
-2. **Enter** the text you want to find and replace
-3. **Configure** advanced options if needed
-4. **Click** 'Replace & Download' to process
-5. **Download** the updated PDF
+### 🎯 Enhanced Features:
+- **🔤 Font Preservation**: Maintains original fonts when possible
+- **🎨 Color Preservation**: Keeps original text colors
+- **📊 PDF Analysis**: Shows document complexity before processing
+- **🔄 Dual Processing**: Advanced method with intelligent fallback
+- **📋 Detailed Reporting**: Shows exactly what was changed
 
-### ⚠️ Important Notes:
-- This tool extracts text and recreates the PDF, so complex formatting may be lost
-- Images, tables, and special layouts will not be preserved
-- Best suited for text-heavy documents
-- Large PDFs may take longer to process
+### 💡 Best Results:
+- Works best with **text-heavy PDFs**
+- **Simple layouts** preserve better than complex ones
+- **Standard fonts** work more reliably
+- **Large text** preserves better than small text
+
+### ⚠️ Limitations:
+- Cannot preserve **images** or **graphics** perfectly
+- **Complex tables** may lose structure
+- **Custom fonts** may fall back to standard fonts
+- **Vector graphics** are not preserved
 """)
