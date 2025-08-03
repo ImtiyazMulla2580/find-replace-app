@@ -3,28 +3,69 @@ import fitz  # PyMuPDF
 import io
 import tempfile
 import re
+import base64
+from fastapi import FastAPI, File, UploadFile, Form
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+import uvicorn
+import threading
+import time
 
-st.set_page_config(page_title="PDF Find & Replace - Enhanced", layout="centered")
-st.title("🎯 PDF Find & Replace (Enhanced Formatting)")
-st.markdown("Advanced PDF text replacement with maximum formatting preservation ✨")
+# Create FastAPI app for API endpoints
+api_app = FastAPI()
+api_app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-uploaded_file = st.file_uploader("📄 Upload a PDF file", type=["pdf"])
-find_text = st.text_input("🔍 Text to Find")
-replace_text = st.text_input("✏️ Replace With")
-
-# Processing options
-st.subheader("🔧 Processing Options")
-col1, col2 = st.columns(2)
-
-with col1:
-    preserve_fonts = st.checkbox("🔤 Preserve original fonts", value=True)
-    preserve_colors = st.checkbox("🎨 Preserve text colors", value=True)
-
-with col2:
-    case_sensitive = st.checkbox("🔍 Case sensitive search", value=True)
-    whole_words = st.checkbox("📝 Whole words only", value=False)
-
-run_button = st.button("🔁 Replace & Download", type="primary")
+@api_app.post("/api/replace")
+async def replace_text_in_pdf(
+    file: UploadFile = File(...),
+    find_text: str = Form(...),
+    replace_text: str = Form(...)
+):
+    """API endpoint for PDF text replacement"""
+    try:
+        # Read uploaded PDF
+        pdf_bytes = await file.read()
+        
+        # Perform replacement using PyMuPDF
+        result_bytes, total_replacements, details, status = advanced_pdf_replacement(
+            pdf_bytes, find_text, replace_text, {
+                'preserve_fonts': True,
+                'preserve_colors': True,
+                'case_sensitive': False,
+                'whole_words': False
+            }
+        )
+        
+        if result_bytes:
+            # Convert to base64 for JSON response
+            pdf_base64 = base64.b64encode(result_bytes).decode('utf-8')
+            
+            return JSONResponse({
+                "success": True,
+                "pdf_base64": pdf_base64,
+                "replacements": total_replacements,
+                "details": details,
+                "status": status
+            })
+        else:
+            return JSONResponse({
+                "success": False,
+                "error": status,
+                "replacements": 0
+            })
+            
+    except Exception as e:
+        return JSONResponse({
+            "success": False,
+            "error": str(e),
+            "replacements": 0
+        })
 
 def get_font_info(span):
     """Extract detailed font information from text span"""
@@ -46,7 +87,7 @@ def get_font_info(span):
     return font_info
 
 def advanced_pdf_replacement(pdf_bytes, find_text, replace_text, options):
-    """Advanced PDF replacement with maximum formatting preservation - FIXED VERSION"""
+    """Advanced PDF replacement with maximum formatting preservation"""
     try:
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         total_replacements = 0
@@ -65,7 +106,7 @@ def advanced_pdf_replacement(pdf_bytes, find_text, replace_text, options):
                         for span in line["spans"]:
                             original_text = span.get("text", "")
                             
-                            # FIXED: Apply search options with proper regex matching
+                            # Apply search options with proper regex matching
                             if options['whole_words']:
                                 if options['case_sensitive']:
                                     pattern = r'\b' + re.escape(find_text) + r'\b'
@@ -74,13 +115,12 @@ def advanced_pdf_replacement(pdf_bytes, find_text, replace_text, options):
                                     pattern = r'\b' + re.escape(find_text) + r'\b'
                                     matches = list(re.finditer(pattern, original_text, re.IGNORECASE))
                             else:
-                                # FIXED: Use proper regex finditer instead of simple boolean check
                                 if options['case_sensitive']:
                                     matches = list(re.finditer(re.escape(find_text), original_text))
                                 else:
                                     matches = list(re.finditer(re.escape(find_text), original_text, re.IGNORECASE))
                             
-                            # FIXED: Only process if there are actual matches
+                            # Only process if there are actual matches
                             if matches:
                                 # Get font information
                                 font_info = get_font_info(span)
@@ -131,7 +171,8 @@ def advanced_pdf_replacement(pdf_bytes, find_text, replace_text, options):
                     'page': page_num + 1,
                     'replacements': page_replacements
                 })
-                total_replacements += page_replacements
+            
+            total_replacements += page_replacements
         
         # Get modified PDF bytes
         result_bytes = doc.tobytes()
@@ -142,195 +183,50 @@ def advanced_pdf_replacement(pdf_bytes, find_text, replace_text, options):
     except Exception as e:
         return None, 0, [], f"Error: {str(e)}"
 
-def fallback_text_replacement(pdf_bytes, find_text, replace_text, options):
-    """Fallback method with basic text replacement"""
-    try:
-        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-        new_doc = fitz.open()
-        total_replacements = 0
-        
-        for page_num in range(len(doc)):
-            page = doc.load_page(page_num)
-            
-            # Extract text and perform replacement
-            text = page.get_text()
-            if options['case_sensitive']:
-                replaced_text = text.replace(find_text, replace_text)
-                replacements = text.count(find_text)
-            else:
-                replaced_text = re.sub(re.escape(find_text), replace_text, text, flags=re.IGNORECASE)
-                replacements = len(re.findall(re.escape(find_text), text, re.IGNORECASE))
-            
-            total_replacements += replacements
-            
-            # Create new page
-            rect = page.rect
-            new_page = new_doc.new_page(width=rect.width, height=rect.height)
-            
-            if replaced_text.strip():
-                new_page.insert_text(
-                    (50, 50),
-                    replaced_text,
-                    fontsize=11,
-                    fontname="helv"
-                )
-        
-        result_bytes = new_doc.tobytes()
-        new_doc.close()
-        doc.close()
-        
-        return result_bytes, total_replacements, [], "Fallback method used"
-        
-    except Exception as e:
-        return None, 0, [], f"Fallback failed: {str(e)}"
+def start_api_server():
+    """Start FastAPI server in a separate thread"""
+    uvicorn.run(api_app, host="127.0.0.1", port=8001, log_level="error")
 
-def analyze_pdf_complexity(pdf_bytes):
-    """Analyze PDF to recommend best processing method"""
-    try:
-        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-        
-        stats = {
-            'pages': len(doc),
-            'fonts': set(),
-            'colors': set(),
-            'images': 0,
-            'complexity_score': 0
-        }
-        
-        for page_num in range(min(3, len(doc))):  # Check first 3 pages
-            page = doc.load_page(page_num)
-            
-            # Count images
-            stats['images'] += len(page.get_images())
-            
-            # Analyze text formatting
-            text_dict = page.get_text("dict")
-            for block in text_dict.get("blocks", []):
-                if "lines" in block:
-                    for line in block["lines"]:
-                        for span in line["spans"]:
-                            stats['fonts'].add(span.get('font', 'unknown'))
-                            stats['colors'].add(span.get('color', 0))
-        
-        # Calculate complexity score
-        stats['complexity_score'] = len(stats['fonts']) + len(stats['colors']) + (stats['images'] * 2)
-        
-        doc.close()
-        return stats
-        
-    except:
-        return {'complexity_score': 0, 'pages': 0}
+# Start API server in background thread
+api_thread = threading.Thread(target=start_api_server, daemon=True)
+api_thread.start()
 
-if uploaded_file and run_button:
-    if not find_text:
-        st.warning("⚠️ Please enter text to find.")
-    elif not replace_text:
-        st.warning("⚠️ Please enter replacement text.")
-    else:
-        with st.spinner("🔍 Analyzing PDF..."):
-            pdf_bytes = uploaded_file.read()
-            
-            # Analyze PDF complexity
-            pdf_stats = analyze_pdf_complexity(pdf_bytes)
-            
-            # Show PDF analysis
-            with st.expander("📊 PDF Analysis"):
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("Pages", pdf_stats.get('pages', 0))
-                with col2:
-                    st.metric("Fonts", len(pdf_stats.get('fonts', [])))
-                with col3:
-                    st.metric("Complexity", pdf_stats.get('complexity_score', 0))
-            
-            # Process PDF
-            options = {
-                'preserve_fonts': preserve_fonts,
-                'preserve_colors': preserve_colors,
-                'case_sensitive': case_sensitive,
-                'whole_words': whole_words
-            }
-            
-            with st.spinner("🔄 Processing PDF..."):
-                # Try advanced method first
-                result_bytes, replacements, details, status = advanced_pdf_replacement(
-                    pdf_bytes, find_text, replace_text, options
-                )
-                
-                if not result_bytes or replacements == 0:
-                    # Try fallback method
-                    st.info("🔄 Trying fallback method...")
-                    result_bytes, replacements, details, status = fallback_text_replacement(
-                        pdf_bytes, find_text, replace_text, options
-                    )
-                
-                if result_bytes and replacements > 0:
-                    st.success(f"✅ Successfully replaced {replacements} instances!")
-                    
-                    # Show processing details
-                    with st.expander("📋 Processing Details"):
-                        st.write(f"**Status:** {status}")
-                        st.write(f"**Search term:** `{find_text}`")
-                        st.write(f"**Replacement:** `{replace_text}`")
-                        st.write(f"**Total replacements:** {replacements}")
-                        
-                        if details:
-                            st.write("**By page:**")
-                            for detail in details:
-                                st.write(f"• Page {detail['page']}: {detail['replacements']} replacements")
-                    
-                    # Download section
-                    st.markdown("### 📥 Download Result")
-                    
-                    col1, col2 = st.columns([2, 1])
-                    with col1:
-                        st.download_button(
-                            label="📥 Download Enhanced PDF",
-                            data=result_bytes,
-                            file_name=f"enhanced_{uploaded_file.name}",
-                            mime="application/pdf",
-                            use_container_width=True
-                        )
-                    
-                    with col2:
-                        file_size = len(result_bytes) / 1024  # KB
-                        st.metric("File Size", f"{file_size:.1f} KB")
-                    
-                    st.success("🎉 PDF processing completed with enhanced formatting preservation!")
-                    
-                elif replacements == 0:
-                    st.warning(f"❌ No instances of '{find_text}' found in the document.")
-                    
-                    # Suggestions
-                    st.info("💡 **Suggestions:**")
-                    st.write("• Check spelling and capitalization")
-                    st.write("• Try disabling 'Case sensitive search'")
-                    st.write("• Try disabling 'Whole words only'")
-                    st.write("• Search for a shorter text snippet")
-                    
-                else:
-                    st.error("❌ PDF processing failed.")
-                    st.write(f"Error details: {status}")
+# Give the API server time to start
+time.sleep(2)
 
-# Footer
+# Streamlit UI
+st.set_page_config(page_title="PDF Find & Replace - Hybrid Mode", layout="wide")
+
+st.title("🎯 PDF Find & Replace (Hybrid PyMuPDF + Foxit)")
+st.markdown("**Enhanced version:** PyMuPDF backend + Foxit SDK frontend")
+
+col1, col2 = st.columns([1, 1])
+
+with col1:
+    st.subheader("📊 API Status")
+    st.success("✅ FastAPI server running on port 8001")
+    st.info("🔗 API endpoint: http://localhost:8001/api/replace")
+    
+    st.subheader("🔧 How it works:")
+    st.write("1. **Frontend:** Beautiful Foxit SDK viewer")
+    st.write("2. **Backend:** PyMuPDF for real text replacement")
+    st.write("3. **API:** FastAPI bridge between them")
+
+with col2:
+    st.subheader("🚀 Next Steps")
+    st.write("1. Keep this Streamlit app running")
+    st.write("2. Open your browser to: http://localhost:8000/foxit-test.html")
+    st.write("3. Upload PDF and test find & replace")
+    
+    if st.button("🌐 Open Foxit Interface"):
+        st.markdown("**Manual:** Go to http://localhost:8000/foxit-test.html")
+
 st.markdown("---")
-st.markdown("""
-### 🎯 Enhanced Features:
-- **🔤 Font Preservation**: Maintains original fonts when possible
-- **🎨 Color Preservation**: Keeps original text colors
-- **📊 PDF Analysis**: Shows document complexity before processing
-- **🔄 Dual Processing**: Advanced method with intelligent fallback
-- **📋 Detailed Reporting**: Shows exactly what was changed
-
-### 💡 Best Results:
-- Works best with **text-heavy PDFs**
-- **Simple layouts** preserve better than complex ones
-- **Standard fonts** work more reliably
-- **Large text** preserves better than small text
-
-### ⚠️ Limitations:
-- Cannot preserve **images** or **graphics** perfectly
-- **Complex tables** may lose structure
-- **Custom fonts** may fall back to standard fonts
-- **Vector graphics** are not preserved
+st.subheader("📝 Configuration")
+st.code("""
+Frontend URL: http://localhost:8000/foxit-test.html
+API URL: http://localhost:8001/api/replace
+Streamlit URL: http://localhost:8501 (this page)
 """)
+
+st.markdown("**Keep this window open** - it runs the API server that processes your PDFs!")
